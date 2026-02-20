@@ -70,7 +70,7 @@ async def adminkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if len(context.args) == 0:
-        return await update.message.reply_text("Send key like:\n/adminkey 8006902002")
+        return await update.message.reply_text("Send key like:\n/adminkey 800*******")
 
     if context.args[0] == ADMIN_KEY:
         admins = load_json(ADMIN_FILE)
@@ -204,3 +204,4 @@ app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filter
 app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post))
 
 app.run_polling()
+
