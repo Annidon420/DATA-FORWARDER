@@ -1,261 +1,267 @@
 import os
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    ContextTypes,
     CallbackQueryHandler,
+    ContextTypes,
     filters,
 )
 
+# ================= CONFIG ================= #
+
 TOKEN = os.getenv("TOKEN")
-ADMIN_KEY = "8006902002"
-DATA_DIR = "/data"
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-USERS_FILE = "users.json"
-VIDEOS_FILE = "videos.json"
-FORCE_FILE = "force.json"
-ADMIN_FILE = "admin.json"
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# ---------------- STORAGE ---------------- #
+USERS_FILE = f"{DATA_DIR}/users.json"
+CODES_FILE = f"{DATA_DIR}/codes.json"
+FORCE_FILE = f"{DATA_DIR}/force.json"
+ADMINS_FILE = f"{DATA_DIR}/admins.json"
 
-def ensure_data_folder():
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
+# ================= JSON HELPERS ================= #
 
-def get_path(filename):
-    ensure_data_folder()
-    return os.path.join(DATA_DIR, filename)
-
-def load_json(filename):
-    path = get_path(filename)
-    if not os.path.exists(path):
-        with open(path, "w") as f:
-            json.dump({}, f)
-    with open(path, "r") as f:
+def load_json(file):
+    if not os.path.exists(file):
+        return {}
+    with open(file, "r") as f:
         return json.load(f)
 
-def save_json(filename, data):
-    with open(get_path(filename), "w") as f:
-        json.dump(data, f, indent=2)
 
-# ---------------- HELPERS ---------------- #
+def save_json(file, data):
+    with open(file, "w") as f:
+        json.dump(data, f)
 
-def add_user(user_id):
-    users = load_json(USERS_FILE)
-    users[str(user_id)] = True
-    save_json(USERS_FILE, users)
 
 def is_admin(user_id):
-    admins = load_json(ADMIN_FILE)
-    return str(user_id) in admins
+    admins = load_json(ADMINS_FILE)
+    return str(user_id) in admins or user_id == ADMIN_ID
 
-# ---------------- FORCE JOIN ---------------- #
 
-async def check_force_join(update, context):
+# ================= START ================= #
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    users = load_json(USERS_FILE)
+
+    users[str(user.id)] = user.first_name
+    save_json(USERS_FILE, users)
+
+    await update.message.reply_text(
+        "👋 Welcome!\n\nSend your access code to continue."
+    )
+
+
+# ================= FORCE JOIN SYSTEM ================= #
+
+async def check_force_join(user_id, context):
     channels = load_json(FORCE_FILE)
-
-    if not channels:
-        return True
-
-    user_id = update.effective_user.id
-    buttons = []
-    not_joined = False
+    not_joined = []
 
     for channel in channels:
         try:
             member = await context.bot.get_chat_member(channel, user_id)
-            if member.status in ["left", "kicked"]:
-                not_joined = True
-                buttons.append([
-                    InlineKeyboardButton(
-                        "Join Channel",
-                        url=f"https://t.me/{channel.replace('@','')}"
-                    )
-                ])
-        except:
-            not_joined = True
 
-    if not_joined:
-        buttons.append([InlineKeyboardButton("✅ I Joined", callback_data="recheck")])
-        await update.message.reply_text(
-            "🚫 You must join required channel(s) first.",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            if member.status not in ["member", "administrator", "creator"]:
+                not_joined.append(channel)
+
+        except Exception as e:
+            print(f"Force join error: {e}")
+            not_joined.append(channel)
+
+    return not_joined
+
+
+async def send_force_message(update, context, channels):
+    keyboard = []
+
+    for channel in channels:
+        username = channel.replace("@", "")
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📢 Join {channel}",
+                url=f"https://t.me/{username}"
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("✅ I Joined", callback_data="recheck_join")
+    ])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            "🚫 To continue, please join required channels:",
+            reply_markup=reply_markup
         )
-        return False
+    else:
+        await update.message.reply_text(
+            "🚫 To continue, please join required channels:",
+            reply_markup=reply_markup
+        )
 
-    return True
 
-async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    channels = load_json(FORCE_FILE)
     user_id = query.from_user.id
+    not_joined = await check_force_join(user_id, context)
 
-    for channel in channels:
-        try:
-            member = await context.bot.get_chat_member(channel, user_id)
-            if member.status in ["left", "kicked"]:
-                return await query.edit_message_text("❌ Still not joined.")
-        except:
-            return await query.edit_message_text("❌ Error checking join.")
+    if not not_joined:
+        await query.edit_message_text(
+            "✅ Verification Successful!\n\nNow send your access code."
+        )
+    else:
+        await send_force_message(update, context, not_joined)
 
-    await query.edit_message_text("✅ Join confirmed! Now send video number.")
 
-# ---------------- COMMANDS ---------------- #
+# ================= MESSAGE HANDLER ================= #
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    add_user(user_id)
+    text = update.message.text
 
-    if not await check_force_join(update, context):
-        return
+    # Check force join first
+    not_joined = await check_force_join(user_id, context)
+    if not_joined:
+        return await send_force_message(update, context, not_joined)
 
-    await update.message.reply_text(
-        "👋 Welcome!\n\nSend video number to receive video."
-    )
+    codes = load_json(CODES_FILE)
+
+    if text in codes:
+        await update.message.reply_text("🎉 Access Granted!")
+    else:
+        await update.message.reply_text("❌ Invalid Code.")
+
+
+# ================= ADMIN PANEL ================= #
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Access Denied.")
 
     await update.message.reply_text(
-        "👑 Admin Panel:\n\n"
-        "/broadcast (reply to message)\n"
+        "🔐 Admin Panel\n\n"
+        "/addcode CODE\n"
         "/addforce @channel\n"
-        "/removeforce @channel"
+        "/removeforce @channel\n"
+        "/broadcast MESSAGE\n"
+        "/adminkey USER_ID"
     )
 
+
+# ================= ADMIN COMMANDS ================= #
+
 async def adminkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) == 0:
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("❌ Only owner can add admins.")
+
+    if not context.args:
+        return await update.message.reply_text("Usage:\n/adminkey USER_ID")
+
+    admins = load_json(ADMINS_FILE)
+    admins[context.args[0]] = True
+    save_json(ADMINS_FILE, admins)
+
+    await update.message.reply_text("✅ Admin added successfully.")
+
+
+async def addcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
         return
 
-    if context.args[0] == ADMIN_KEY:
-        admins = load_json(ADMIN_FILE)
-        admins[str(update.effective_user.id)] = True
-        save_json(ADMIN_FILE, admins)
-        await update.message.reply_text("✅ Admin access granted.")
-    else:
-        await update.message.reply_text("❌ Invalid key.")
+    if not context.args:
+        return await update.message.reply_text("Usage:\n/addcode CODE")
+
+    codes = load_json(CODES_FILE)
+    codes[context.args[0]] = True
+    save_json(CODES_FILE, codes)
+
+    await update.message.reply_text("✅ Code added.")
+
 
 async def addforce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("❌ Access Denied.")
+        return
 
-    if len(context.args) == 0:
-        return await update.message.reply_text("Usage:\n/addforce @channelusername")
+    if not context.args:
+        return await update.message.reply_text("Usage:\n/addforce @channel")
 
-    channel = context.args[0]
     channels = load_json(FORCE_FILE)
-    channels[channel] = True
+    channels[context.args[0]] = True
     save_json(FORCE_FILE, channels)
 
-    await update.message.reply_text(f"✅ {channel} added to force join.")
+    await update.message.reply_text("✅ Force channel added.")
+
 
 async def removeforce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("❌ Access Denied.")
+        return
 
-    if len(context.args) == 0:
-        return await update.message.reply_text("Usage:\n/removeforce @channelusername")
+    if not context.args:
+        return await update.message.reply_text("Usage:\n/removeforce @channel")
 
-    channel = context.args[0]
     channels = load_json(FORCE_FILE)
 
-    if channel in channels:
-        del channels[channel]
+    if context.args[0] in channels:
+        del channels[context.args[0]]
         save_json(FORCE_FILE, channels)
-        await update.message.reply_text(f"❌ {channel} removed.")
+        await update.message.reply_text("❌ Force channel removed.")
     else:
         await update.message.reply_text("Channel not found.")
 
-# ---------------- AUTO SYNC ---------------- #
-
-async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.channel_post.video:
-        return
-
-    videos = load_json(VIDEOS_FILE)
-    next_id = str(len(videos) + 1)
-
-    videos[next_id] = {
-        "chat_id": update.channel_post.chat_id,
-        "message_id": update.channel_post.message_id,
-    }
-
-    save_json(VIDEOS_FILE, videos)
-
-# ---------------- SEND VIDEO ---------------- #
-
-async def handle_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_force_join(update, context):
-        return
-
-    text = update.message.text.strip()
-
-    if not text.isdigit():
-        return
-
-    videos = load_json(VIDEOS_FILE)
-
-    if text not in videos:
-        return await update.message.reply_text("❌ Video not found.")
-
-    data = videos[text]
-
-    await context.bot.copy_message(
-        chat_id=update.effective_chat.id,
-        from_chat_id=data["chat_id"],
-        message_id=data["message_id"],
-    )
-
-# ---------------- BROADCAST ---------------- #
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("Reply to message with /broadcast")
+    if not context.args:
+        return await update.message.reply_text("Usage:\n/broadcast MESSAGE")
 
+    message = " ".join(context.args)
     users = load_json(USERS_FILE)
-    success = 0
+
+    sent = 0
+    failed = 0
 
     for user_id in users:
         try:
-            await context.bot.copy_message(
+            await context.bot.send_message(
                 chat_id=int(user_id),
-                from_chat_id=update.effective_chat.id,
-                message_id=update.message.reply_to_message.message_id,
+                text=message
             )
-            success += 1
+            sent += 1
         except:
-            pass
+            failed += 1
 
-    await update.message.reply_text(f"✅ Broadcast sent to {success} users.")
+    await update.message.reply_text(
+        f"✅ Broadcast Completed\n\nSent: {sent}\nFailed: {failed}"
+    )
 
-# ---------------- MAIN ---------------- #
+
+# ================= MAIN ================= #
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("admin", admin))
 app.add_handler(CommandHandler("adminkey", adminkey))
+app.add_handler(CommandHandler("addcode", addcode))
 app.add_handler(CommandHandler("addforce", addforce))
 app.add_handler(CommandHandler("removeforce", removeforce))
 app.add_handler(CommandHandler("broadcast", broadcast))
 
-app.add_handler(CallbackQueryHandler(recheck_callback, pattern="recheck"))
-
-app.add_handler(
-    MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_number)
-)
-
-app.add_handler(
-    MessageHandler(filters.ChatType.CHANNEL, channel_post)
-)
+app.add_handler(CallbackQueryHandler(recheck_join, pattern="recheck_join"))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 app.run_polling()
