@@ -17,19 +17,19 @@ from telegram.ext import (
 # ==============================
 TOKEN = os.getenv("TOKEN")
 OWNER_ID = int(os.getenv("ADMIN_ID"))
-STORAGE_CHANNEL = int(os.getenv("STORAGE_CHANNEL"))  # Numeric ID of private channel
+STORAGE_CHANNEL = int(os.getenv("STORAGE_CHANNEL"))
 
 # ==============================
 # LOGGING
 # ==============================
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    level=logging.INFO,
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # ==============================
-# DATA DIRECTORY
+# DATA DIRECTORY & JSON FILES
 # ==============================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -39,9 +39,6 @@ CODES_FILE = DATA_DIR / "codes.json"
 FORCE_FILE = DATA_DIR / "force.json"
 ADMINS_FILE = DATA_DIR / "admins.json"
 
-# ==============================
-# JSON HELPERS
-# ==============================
 def load_json(file_path, default):
     try:
         if not file_path.exists():
@@ -60,7 +57,7 @@ def save_json(file_path, data):
         json.dump(data, f, indent=4)
 
 users = load_json(USERS_FILE, [])
-codes = load_json(CODES_FILE, {})  # serial: file_id
+codes = load_json(CODES_FILE, {})  # serial_number : file_id
 force_channels = load_json(FORCE_FILE, [])
 admins = load_json(ADMINS_FILE, [OWNER_ID])
 
@@ -102,7 +99,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    await update.message.reply_text("👋 Welcome! Send your access code.")
+    await update.message.reply_text(
+        "👋 Welcome!\nSend your access code to get the video."
+    )
 
 async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -120,7 +119,12 @@ async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text in codes:
-        await update.message.reply_text(f"✅ Access Granted for video serial {text}!")
+        file_id = codes[text]
+        try:
+            await update.message.reply_video(file_id)
+            await update.message.reply_text(f"✅ Access Granted! Video serial {text}")
+        except Exception:
+            await update.message.reply_text(f"✅ Access Granted for serial {text}, but failed to send video.")
     else:
         await update.message.reply_text("❌ Invalid Code.")
 
@@ -136,7 +140,7 @@ async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Code added: {code}")
 
 # ==============================
-# FORCE MANAGEMENT
+# FORCE JOIN MANAGEMENT
 # ==============================
 async def add_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -200,26 +204,30 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Broadcast sent to {success} users.")
 
 # ==============================
-# AUTO-SYNC FOR STORAGE CHANNEL
+# AUTO-SYNC VIDEOS IN STORAGE_CHANNEL
 # ==============================
 async def auto_video_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.video:
         return
     if update.message.chat_id != STORAGE_CHANNEL:
         return
+
+    # Assign next serial number automatically
     serial = str(len(codes) + 1)
     codes[serial] = update.message.video.file_id
     save_json(CODES_FILE, codes)
-    logger.info(f"Auto-sync: Video in channel assigned serial {serial}")
+    logger.info(f"Auto-sync: Video assigned serial {serial}")
 
 # ==============================
-# MAIN FUNCTION
+# MAIN
 # ==============================
 def main():
     if not TOKEN or not OWNER_ID or not STORAGE_CHANNEL:
         raise ValueError("Please set TOKEN, ADMIN_ID, STORAGE_CHANNEL environment variables")
 
     app = ApplicationBuilder().token(TOKEN).build()
+
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addcode", add_code))
     app.add_handler(CommandHandler("addforce", add_force))
@@ -227,7 +235,11 @@ def main():
     app.add_handler(CommandHandler("adminkey", add_admin))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast))
+
+    # Callbacks
     app.add_handler(CallbackQueryHandler(recheck_join, pattern="recheck_join"))
+
+    # Messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_code))
     app.add_handler(MessageHandler(filters.VIDEO, auto_video_serial))
 
