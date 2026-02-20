@@ -52,7 +52,6 @@ def load_json(file_path, default):
             with open(file_path, "w") as f:
                 json.dump(default, f)
             return default
-
         with open(file_path, "r") as f:
             return json.load(f)
     except Exception:
@@ -95,16 +94,12 @@ def build_force_keyboard():
     buttons = []
     for channel in force_channels:
         username = channel.replace("@", "")
-        buttons.append(
-            [InlineKeyboardButton("Join Channel", url=f"https://t.me/{username}")]
-        )
-    buttons.append(
-        [InlineKeyboardButton("I Joined", callback_data="recheck_join")]
-    )
+        buttons.append([InlineKeyboardButton("Join Channel", url=f"https://t.me/{username}")])
+    buttons.append([InlineKeyboardButton("I Joined", callback_data="recheck_join")])
     return InlineKeyboardMarkup(buttons)
 
 # ==============================
-# START
+# START COMMAND
 # ==============================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,7 +123,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==============================
-# FORCE RECHECK
+# FORCE RECHECK CALLBACK
 # ==============================
 
 async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -160,7 +155,6 @@ async def handle_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-
     if not context.args:
         await update.message.reply_text("Usage: /addcode CODE")
         return
@@ -178,7 +172,6 @@ async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-
     if not context.args:
         await update.message.reply_text("Usage: /addforce @channel")
         return
@@ -193,7 +186,6 @@ async def add_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def remove_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-
     if not context.args:
         return
 
@@ -211,7 +203,6 @@ async def remove_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
-
     if not context.args:
         return
 
@@ -241,7 +232,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-
     if not context.args:
         await update.message.reply_text("Usage: /broadcast MESSAGE")
         return
@@ -259,26 +249,37 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Broadcast sent to {success} users.")
 
 # ==============================
-# AUTO VIDEO SERIAL SYSTEM
+# AUTO VIDEO SYNC (DM TO OWNER)
 # ==============================
 
 async def auto_video_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not VIDEO_CHANNEL:
+    if not update.message.video:
         return
 
-    chat = update.effective_chat
-    if chat.username and f"@{chat.username}" == VIDEO_CHANNEL:
-        if update.message.video:
-            serial = str(len(codes) + 1)
-            codes[serial] = True
-            save_json(CODES_FILE, codes)
+    # Generate next serial code
+    serial = str(len(codes) + 1)
+    codes[serial] = True
+    save_json(CODES_FILE, codes)
 
-            await update.message.reply_text(
-                f"🎬 Video Received\nAccess Code: {serial}"
-            )
+    # DM owner
+    try:
+        await context.bot.send_message(
+            OWNER_ID,
+            f"🎬 New video uploaded.\nAccess Code: {serial}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to DM OWNER_ID: {e}")
+
+    # Optional: reply in channel
+    try:
+        await update.message.reply_text(f"🎬 Video Received\nAccess Code: {serial}")
+    except Exception:
+        pass
+
+    logger.info(f"Auto-sync code {serial} created successfully.")
 
 # ==============================
-# MAIN
+# MAIN FUNCTION
 # ==============================
 
 def main():
@@ -287,6 +288,7 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addcode", add_code))
     app.add_handler(CommandHandler("addforce", add_force))
@@ -295,8 +297,10 @@ def main():
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast))
 
+    # Callback query for "I Joined"
     app.add_handler(CallbackQueryHandler(recheck_join, pattern="recheck_join"))
 
+    # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_code))
     app.add_handler(MessageHandler(filters.VIDEO, auto_video_serial))
 
