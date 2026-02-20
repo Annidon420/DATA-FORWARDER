@@ -18,7 +18,7 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TOKEN")
 OWNER_ID = int(os.getenv("ADMIN_ID"))
-VIDEO_CHANNEL = os.getenv("VIDEO_CHANNEL")  # Optional
+STORAGE_CHANNEL = int(os.getenv("STORAGE_CHANNEL"))  # Numeric ID of private channel
 
 # ==============================
 # LOGGING
@@ -249,12 +249,16 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Broadcast sent to {success} users.")
 
 # ==============================
-# AUTO VIDEO SYNC (DM TO OWNER)
+# AUTO VIDEO SYNC (STORAGE_CHANNEL)
 # ==============================
 
 async def auto_video_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.video:
         return
+
+    chat_id = update.message.chat_id
+    if chat_id != STORAGE_CHANNEL:
+        return  # Only process videos from STORAGE_CHANNEL
 
     # Generate next serial code
     serial = str(len(codes) + 1)
@@ -270,12 +274,6 @@ async def auto_video_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to DM OWNER_ID: {e}")
 
-    # Optional: reply in channel
-    try:
-        await update.message.reply_text(f"🎬 Video Received\nAccess Code: {serial}")
-    except Exception:
-        pass
-
     logger.info(f"Auto-sync code {serial} created successfully.")
 
 # ==============================
@@ -285,6 +283,10 @@ async def auto_video_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not TOKEN:
         raise ValueError("TOKEN environment variable not set")
+    if not OWNER_ID:
+        raise ValueError("ADMIN_ID environment variable not set")
+    if not STORAGE_CHANNEL:
+        raise ValueError("STORAGE_CHANNEL environment variable not set")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
