@@ -141,14 +141,20 @@ async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ You have not joined all channels.", show_alert=True)
 
 # ==============================
-# CODE SYSTEM
+# CODE SYSTEM WITH VIDEO DELIVERY
 # ==============================
 
 async def handle_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if text in codes:
-        await update.message.reply_text("✅ Access Granted!")
+        file_id = codes[text]
+        try:
+            await update.message.reply_video(file_id)
+            await update.message.reply_text("✅ Access Granted! Enjoy your video.")
+        except Exception as e:
+            await update.message.reply_text("✅ Access Granted! (But failed to send video.)")
+            logger.error(f"Failed to send video for code {text}: {e}")
     else:
         await update.message.reply_text("❌ Invalid Code.")
 
@@ -160,7 +166,7 @@ async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     code = context.args[0]
-    codes[code] = True
+    codes[code] = None  # No video file, admin can add codes manually
     save_json(CODES_FILE, codes)
 
     await update.message.reply_text(f"✅ Code added: {code}")
@@ -258,18 +264,20 @@ async def auto_video_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.message.chat_id
     if chat_id != STORAGE_CHANNEL:
-        return  # Only process videos from STORAGE_CHANNEL
+        return  # Only process STORAGE_CHANNEL
 
     # Generate next serial code
     serial = str(len(codes) + 1)
-    codes[serial] = True
+
+    # Save code and video file_id
+    codes[serial] = update.message.video.file_id
     save_json(CODES_FILE, codes)
 
     # DM owner
     try:
         await context.bot.send_message(
             OWNER_ID,
-            f"🎬 New video uploaded.\nAccess Code: {serial}"
+            f"🎬 New video uploaded in channel.\nAccess Code: {serial}"
         )
     except Exception as e:
         logger.error(f"Failed to DM OWNER_ID: {e}")
