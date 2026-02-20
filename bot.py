@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -14,6 +15,10 @@ from telegram.ext import (
     filters,
 )
 
+# ================= LOGGING ================= #
+
+logging.basicConfig(level=logging.INFO)
+
 # ================= CONFIG ================= #
 
 TOKEN = os.getenv("TOKEN")
@@ -27,24 +32,24 @@ CODES_FILE = f"{DATA_DIR}/codes.json"
 FORCE_FILE = f"{DATA_DIR}/force.json"
 ADMINS_FILE = f"{DATA_DIR}/admins.json"
 
-# ================= JSON HELPERS ================= #
+# ================= SAFE JSON ================= #
 
 def load_json(file):
     if not os.path.exists(file):
         return {}
-    with open(file, "r") as f:
-        return json.load(f)
-
+    try:
+        with open(file, "r") as f:
+            return json.load(f)
+    except:
+        return {}
 
 def save_json(file, data):
     with open(file, "w") as f:
-        json.dump(data, f)
-
+        json.dump(data, f, indent=4)
 
 def is_admin(user_id):
     admins = load_json(ADMINS_FILE)
     return str(user_id) in admins or user_id == ADMIN_ID
-
 
 # ================= START ================= #
 
@@ -59,10 +64,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Welcome!\n\nSend your access code to continue."
     )
 
+# ================= FORCE JOIN ================= #
 
-# ================= FORCE JOIN SYSTEM ================= #
-
-async def check_force_join(user_id, context):
+async def check_force(user_id, context):
     channels = load_json(FORCE_FILE)
     not_joined = []
 
@@ -74,13 +78,12 @@ async def check_force_join(user_id, context):
                 not_joined.append(channel)
 
         except Exception as e:
-            print(f"Force join error: {e}")
+            logging.error(f"Force Join Error: {e}")
             not_joined.append(channel)
 
     return not_joined
 
-
-async def send_force_message(update, context, channels):
+async def send_force(update, context, channels):
     keyboard = []
 
     for channel in channels:
@@ -93,48 +96,45 @@ async def send_force_message(update, context, channels):
         ])
 
     keyboard.append([
-        InlineKeyboardButton("✅ I Joined", callback_data="recheck_join")
+        InlineKeyboardButton("✅ I Joined", callback_data="force_check")
     ])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
         await update.callback_query.edit_message_text(
-            "🚫 To continue, please join required channels:",
+            "🚫 Please join required channels first:",
             reply_markup=reply_markup
         )
     else:
         await update.message.reply_text(
-            "🚫 To continue, please join required channels:",
+            "🚫 Please join required channels first:",
             reply_markup=reply_markup
         )
 
-
-async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def force_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # VERY IMPORTANT
 
     user_id = query.from_user.id
-    not_joined = await check_force_join(user_id, context)
+    not_joined = await check_force(user_id, context)
 
     if not not_joined:
         await query.edit_message_text(
-            "✅ Verification Successful!\n\nNow send your access code."
+            "✅ Verification successful!\n\nNow send your code."
         )
     else:
-        await send_force_message(update, context, not_joined)
+        await send_force(update, context, not_joined)
 
-
-# ================= MESSAGE HANDLER ================= #
+# ================= MESSAGE ================= #
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
-    # Check force join first
-    not_joined = await check_force_join(user_id, context)
+    not_joined = await check_force(user_id, context)
     if not_joined:
-        return await send_force_message(update, context, not_joined)
+        return await send_force(update, context, not_joined)
 
     codes = load_json(CODES_FILE)
 
@@ -143,8 +143,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Invalid Code.")
 
-
-# ================= ADMIN PANEL ================= #
+# ================= ADMIN ================= #
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -159,12 +158,11 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/adminkey USER_ID"
     )
 
-
 # ================= ADMIN COMMANDS ================= #
 
 async def adminkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("❌ Only owner can add admins.")
+        return await update.message.reply_text("❌ Only owner allowed.")
 
     if not context.args:
         return await update.message.reply_text("Usage:\n/adminkey USER_ID")
@@ -173,8 +171,7 @@ async def adminkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admins[context.args[0]] = True
     save_json(ADMINS_FILE, admins)
 
-    await update.message.reply_text("✅ Admin added successfully.")
-
+    await update.message.reply_text("✅ Admin added.")
 
 async def addcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -189,7 +186,6 @@ async def addcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ Code added.")
 
-
 async def addforce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -202,7 +198,6 @@ async def addforce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_json(FORCE_FILE, channels)
 
     await update.message.reply_text("✅ Force channel added.")
-
 
 async def removeforce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -219,7 +214,6 @@ async def removeforce(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Force channel removed.")
     else:
         await update.message.reply_text("Channel not found.")
-
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -241,27 +235,37 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=message
             )
             sent += 1
-        except:
+        except Exception as e:
+            logging.error(f"Broadcast Error: {e}")
             failed += 1
 
     await update.message.reply_text(
-        f"✅ Broadcast Completed\n\nSent: {sent}\nFailed: {failed}"
+        f"✅ Broadcast Finished\n\nSent: {sent}\nFailed: {failed}"
     )
-
 
 # ================= MAIN ================= #
 
-app = ApplicationBuilder().token(TOKEN).build()
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("admin", admin))
-app.add_handler(CommandHandler("adminkey", adminkey))
-app.add_handler(CommandHandler("addcode", addcode))
-app.add_handler(CommandHandler("addforce", addforce))
-app.add_handler(CommandHandler("removeforce", removeforce))
-app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("adminkey", adminkey))
+    app.add_handler(CommandHandler("addcode", addcode))
+    app.add_handler(CommandHandler("addforce", addforce))
+    app.add_handler(CommandHandler("removeforce", removeforce))
+    app.add_handler(CommandHandler("broadcast", broadcast))
 
-app.add_handler(CallbackQueryHandler(recheck_join, pattern="recheck_join"))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(force_check_callback, pattern="force_check"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-app.run_polling()
+    # 🔥 AUTOSYNC COMMANDS
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    await app.stop()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
