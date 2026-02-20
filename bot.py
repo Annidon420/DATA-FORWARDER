@@ -17,7 +17,7 @@ from telegram.ext import (
 # ==============================
 TOKEN = os.getenv("TOKEN")
 OWNER_ID = int(os.getenv("ADMIN_ID"))
-STORAGE_CHANNEL = int(os.getenv("STORAGE_CHANNEL"))
+STORAGE_CHANNEL = int(os.getenv("STORAGE_CHANNEL"))  # Numeric ID of private channel
 
 # ==============================
 # LOGGING
@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==============================
-# DATA DIRECTORY & JSON FILES
+# DATA FILES
 # ==============================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -100,7 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await update.message.reply_text(
-        "👋 Welcome!\nSend your access code to get the video."
+        "👋 Welcome!\nSend your video serial number to get access."
     )
 
 async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,12 +109,12 @@ async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     joined = await verify_force_join(user_id, context)
     if joined:
-        await query.edit_message_text("✅ Verification successful! Send your access code.")
+        await query.edit_message_text("✅ Verification successful! Send your serial number.")
     else:
         await query.answer("❌ You have not joined all channels.", show_alert=True)
 
 # ==============================
-# CODE ACCESS SYSTEM
+# USER SEND SERIAL NUMBER
 # ==============================
 async def handle_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -127,17 +127,6 @@ async def handle_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Access Granted for serial {text}, but failed to send video.")
     else:
         await update.message.reply_text("❌ Invalid Code.")
-
-async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /addcode CODE")
-        return
-    code = context.args[0]
-    codes[code] = None
-    save_json(CODES_FILE, codes)
-    await update.message.reply_text(f"✅ Code added: {code}")
 
 # ==============================
 # FORCE JOIN MANAGEMENT
@@ -182,7 +171,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
     await update.message.reply_text(
-        "Admin Panel:\n/addcode CODE\n/addforce @channel\n/removeforce @channel\n/broadcast MESSAGE"
+        "Admin Panel:\n/addforce @channel\n/removeforce @channel\n/broadcast MESSAGE\n/adminkey USER_ID"
     )
 
 # ==============================
@@ -204,19 +193,37 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Broadcast sent to {success} users.")
 
 # ==============================
-# AUTO-SYNC VIDEOS IN STORAGE_CHANNEL
+# AUTO-SYNC VIDEOS (EXISTING + NEW)
 # ==============================
-async def auto_video_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.video:
-        return
+async def sync_videos(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        offset = 0
+        batch_size = 100
+        while True:
+            messages = await context.bot.get_chat_history(STORAGE_CHANNEL, limit=batch_size, offset_id=offset)
+            if not messages:
+                break
+            for msg in reversed(messages):
+                if msg.video:
+                    if str(msg.message_id) not in codes:
+                        serial = str(len(codes) + 1)
+                        codes[serial] = msg.video.file_id
+                        save_json(CODES_FILE, codes)
+                        logger.info(f"Auto-sync: Video assigned serial {serial}")
+            offset = messages[-1].message_id
+            if len(messages) < batch_size:
+                break
+    except Exception as e:
+        logger.error(f"Failed to sync videos: {e}")
+
+async def new_video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != STORAGE_CHANNEL:
         return
-
-    # Assign next serial number automatically
-    serial = str(len(codes) + 1)
-    codes[serial] = update.message.video.file_id
-    save_json(CODES_FILE, codes)
-    logger.info(f"Auto-sync: Video assigned serial {serial}")
+    if update.message.video:
+        serial = str(len(codes) + 1)
+        codes[serial] = update.message.video.file_id
+        save_json(CODES_FILE, codes)
+        logger.info(f"New video uploaded: Serial {serial}")
 
 # ==============================
 # MAIN
@@ -229,7 +236,6 @@ def main():
 
     # Commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addcode", add_code))
     app.add_handler(CommandHandler("addforce", add_force))
     app.add_handler(CommandHandler("removeforce", remove_force))
     app.add_handler(CommandHandler("adminkey", add_admin))
@@ -241,7 +247,10 @@ def main():
 
     # Messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_code))
-    app.add_handler(MessageHandler(filters.VIDEO, auto_video_serial))
+    app.add_handler(MessageHandler(filters.VIDEO, new_video_handler))
+
+    # Sync existing videos on startup
+    app.job_queue.run_once(sync_videos, when=1)
 
     logger.info("Bot started successfully.")
     app.run_polling(close_loop=False)
