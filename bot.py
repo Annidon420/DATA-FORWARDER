@@ -1,6 +1,6 @@
-import os
-import sqlite3
-from telegram import Update
+import json
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -9,93 +9,191 @@ from telegram.ext import (
     filters,
 )
 
-# ================== CONFIG ==================
+TOKEN = "YOUR_BOT_TOKEN"
+ADMIN_KEY = "8006902002"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID"))  # example: -1001234567890
+logging.basicConfig(level=logging.INFO)
 
-# ============================================
+# ---------------- JSON Helpers ---------------- #
 
-# Database setup
-conn = sqlite3.connect("videos.db", check_same_thread=False)
-cursor = conn.cursor()
+def load_json(file):
+    with open(file, "r") as f:
+        return json.load(f)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS videos (
-    serial INTEGER PRIMARY KEY,
-    message_id INTEGER
-)
-""")
-conn.commit()
+def save_json(file, data):
+    with open(file, "w") as f:
+        json.dump(data, f, indent=2)
 
+# ---------------- User System ---------------- #
 
-# ================== AUTO SYNC ==================
+def add_user(user_id):
+    users = load_json("users.json")
+    if user_id not in users["users"]:
+        users["users"].append(user_id)
+        save_json("users.json", users)
 
-async def auto_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.channel_post
+def is_admin(user_id):
+    admins = load_json("admins.json")
+    return user_id in admins["admins"]
 
-    if message and message.video:
-        cursor.execute("SELECT MAX(serial) FROM videos")
-        result = cursor.fetchone()[0]
+# ---------------- Force Join Check ---------------- #
 
-        next_serial = 1 if result is None else result + 1
+async def check_force_join(user_id, context):
+    force = load_json("forcejoin.json")
 
-        cursor.execute(
-            "INSERT INTO videos (serial, message_id) VALUES (?, ?)",
-            (next_serial, message.message_id),
-        )
-        conn.commit()
+    if not force["enabled"] or not force["channels"]:
+        return True
 
-        print(f"New video saved with serial {next_serial}")
+    for channel in force["channels"]:
+        try:
+            member = await context.bot.get_chat_member(channel, user_id)
+            if member.status == "left":
+                return False
+        except:
+            return False
 
+    return True
 
-# ================== USER NUMBER HANDLER ==================
+# ---------------- Admin Key ---------------- #
 
-async def send_video_by_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-
-    if not text.isdigit():
+async def adminkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
         return
 
-    serial = int(text)
+    if context.args[0] == ADMIN_KEY:
+        admins = load_json("admins.json")
+        if update.effective_user.id not in admins["admins"]:
+            admins["admins"].append(update.effective_user.id)
+            save_json("admins.json", admins)
 
-    cursor.execute("SELECT message_id FROM videos WHERE serial = ?", (serial,))
-    result = cursor.fetchone()
-
-    if result:
-        message_id = result[0]
-
-        await context.bot.copy_message(
-            chat_id=update.effective_chat.id,
-            from_chat_id=STORAGE_CHANNEL_ID,
-            message_id=message_id,
-        )
+        await update.message.reply_text("✅ You are now admin.")
     else:
-        await update.message.reply_text("Video not found.")
+        await update.message.reply_text("❌ Invalid key.")
 
+# ---------------- Force Join Commands ---------------- #
 
-# ================== START COMMAND ==================
+async def addforce(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send a number to get a video.")
+    if not context.args:
+        return
 
+    force = load_json("forcejoin.json")
+    force["channels"].append(context.args[0])
+    save_json("forcejoin.json", force)
 
-# ================== MAIN ==================
+    await update.message.reply_text("✅ Channel added.")
 
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+async def forceon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
 
-    app.add_handler(CommandHandler("start", start))
+    force = load_json("forcejoin.json")
+    force["enabled"] = True
+    save_json("forcejoin.json", force)
 
-    # Listen to new channel posts
-    app.add_handler(MessageHandler(filters.Chat(STORAGE_CHANNEL_ID) & filters.VIDEO, auto_sync))
+    await update.message.reply_text("🔥 Force join enabled.")
 
-    # Listen to user numbers
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, send_video_by_number))
+async def forceoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
 
-    print("Bot is running...")
-    app.run_polling()
+    force = load_json("forcejoin.json")
+    force["enabled"] = False
+    save_json("forcejoin.json", force)
 
+    await update.message.reply_text("🛑 Force join disabled.")
 
-if __name__ == "__main__":
-    main()
+# ---------------- Broadcast ---------------- #
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    if not context.args:
+        return
+
+    text = " ".join(context.args)
+    users = load_json("users.json")["users"]
+
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user, text=text)
+        except:
+            pass
+
+    await update.message.reply_text("✅ Broadcast complete.")
+
+async def broadcastphoto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    if not update.message.photo:
+        return
+
+    caption = update.message.caption.replace("/broadcastphoto", "").strip()
+    photo = update.message.photo[-1].file_id
+    users = load_json("users.json")["users"]
+
+    for user in users:
+        try:
+            await context.bot.send_photo(chat_id=user, photo=photo, caption=caption)
+        except:
+            pass
+
+    await update.message.reply_text("✅ Photo broadcast complete.")
+
+# ---------------- Video Auto Sync ---------------- #
+
+async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.channel_post.video:
+        videos = load_json("videos.json")
+        next_number = str(len(videos) + 1)
+        videos[next_number] = update.channel_post.video.file_id
+        save_json("videos.json", videos)
+
+        print(f"Video synced as {next_number}")
+
+# ---------------- Main Message ---------------- #
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    add_user(user_id)
+
+    if update.message.text and update.message.text.isdigit():
+
+        allowed = await check_force_join(user_id, context)
+
+        if not allowed:
+            force = load_json("forcejoin.json")
+            buttons = [
+                [InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.replace('@','')}")]
+                for ch in force["channels"]
+            ]
+            await update.message.reply_text(
+                "⚠️ Please join required channel(s).",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return
+
+        videos = load_json("videos.json")
+
+        if update.message.text in videos:
+            await update.message.reply_video(videos[update.message.text])
+
+# ---------------- Start App ---------------- #
+
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("adminkey", adminkey))
+app.add_handler(CommandHandler("addforce", addforce))
+app.add_handler(CommandHandler("forceon", forceon))
+app.add_handler(CommandHandler("forceoff", forceoff))
+app.add_handler(CommandHandler("broadcast", broadcast))
+app.add_handler(MessageHandler(filters.PHOTO & filters.Caption("/broadcastphoto"), broadcastphoto))
+app.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, channel_post))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+print("Bot Running...")
+app.run_polling()
