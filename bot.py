@@ -18,7 +18,7 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TOKEN")
 OWNER_ID = int(os.getenv("ADMIN_ID"))
-STORAGE_CHANNEL = int(os.getenv("STORAGE_CHANNEL"))  # Numeric ID of private channel
+STORAGE_CHANNEL = int(os.getenv("STORAGE_CHANNEL"))  # Numeric ID of your private channel
 
 # ==============================
 # LOGGING
@@ -68,7 +68,7 @@ def save_json(file_path, data):
         logger.error(f"Error saving {file_path}: {e}")
 
 users = load_json(USERS_FILE, [])
-codes = load_json(CODES_FILE, {})
+codes = load_json(CODES_FILE, {})  # serial_number : file_id
 force_channels = load_json(FORCE_FILE, [])
 admins = load_json(ADMINS_FILE, [OWNER_ID])
 
@@ -141,20 +141,13 @@ async def recheck_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ You have not joined all channels.", show_alert=True)
 
 # ==============================
-# CODE SYSTEM WITH VIDEO DELIVERY
+# CODE SYSTEM (FOR ACCESS)
 # ==============================
 
 async def handle_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-
     if text in codes:
-        file_id = codes[text]
-        try:
-            await update.message.reply_video(file_id)
-            await update.message.reply_text("✅ Access Granted! Enjoy your video.")
-        except Exception as e:
-            await update.message.reply_text("✅ Access Granted! (But failed to send video.)")
-            logger.error(f"Failed to send video for code {text}: {e}")
+        await update.message.reply_text(f"✅ Access Granted for video serial {text}!")
     else:
         await update.message.reply_text("❌ Invalid Code.")
 
@@ -166,9 +159,8 @@ async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     code = context.args[0]
-    codes[code] = None  # No video file, admin can add codes manually
+    codes[code] = None
     save_json(CODES_FILE, codes)
-
     await update.message.reply_text(f"✅ Code added: {code}")
 
 # ==============================
@@ -264,37 +256,22 @@ async def auto_video_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.message.chat_id
     if chat_id != STORAGE_CHANNEL:
-        return  # Only process STORAGE_CHANNEL
+        return
 
-    # Generate next serial code
+    # Assign next serial number
     serial = str(len(codes) + 1)
-
-    # Save code and video file_id
     codes[serial] = update.message.video.file_id
     save_json(CODES_FILE, codes)
 
-    # DM owner
-    try:
-        await context.bot.send_message(
-            OWNER_ID,
-            f"🎬 New video uploaded in channel.\nAccess Code: {serial}"
-        )
-    except Exception as e:
-        logger.error(f"Failed to DM OWNER_ID: {e}")
-
-    logger.info(f"Auto-sync code {serial} created successfully.")
+    logger.info(f"Auto-sync: Video uploaded in STORAGE_CHANNEL assigned serial {serial}")
 
 # ==============================
 # MAIN FUNCTION
 # ==============================
 
 def main():
-    if not TOKEN:
-        raise ValueError("TOKEN environment variable not set")
-    if not OWNER_ID:
-        raise ValueError("ADMIN_ID environment variable not set")
-    if not STORAGE_CHANNEL:
-        raise ValueError("STORAGE_CHANNEL environment variable not set")
+    if not TOKEN or not OWNER_ID or not STORAGE_CHANNEL:
+        raise ValueError("Please set TOKEN, ADMIN_ID, STORAGE_CHANNEL environment variables")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -307,7 +284,7 @@ def main():
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast))
 
-    # Callback query for "I Joined"
+    # Callback query
     app.add_handler(CallbackQueryHandler(recheck_join, pattern="recheck_join"))
 
     # Message handlers
