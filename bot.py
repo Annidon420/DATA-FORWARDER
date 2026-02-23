@@ -1,117 +1,180 @@
 import telebot
 from telebot import types
+import json
+import os
+import random
+import string
+
+# ==============================
+# 🔑 CONFIG
+# ==============================
 
 BOT_TOKEN = "YOUR_BOT_TOKEN"
+ADMIN_ID = 123456789  # Replace with your Telegram ID
+
+# Public channels only (easy version)
+FORCE_CHANNELS = [
+    "@yourchannel1",
+    "@yourchannel2"
+]
+
+DATA_FILE = "videos.json"
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==============================
-# 🔒 FORCE JOIN CHANNELS
-# ==============================
-# Public channel -> "@username"
-# Private channel -> -100xxxxxxxxxx (chat ID)
-
-FORCE_CHANNELS = [
-    "@yourpublicchannel",
-    -1001234567890  # replace with your private channel ID
-]
-
-# ==============================
-# 🎬 VIDEO CODE SYSTEM
+# 📂 LOAD / SAVE DATABASE
 # ==============================
 
-VIDEOS = {
-    "1": "FILE_ID_HERE",
-    "2": "FILE_ID_HERE_2"
-}
+if not os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "w") as f:
+        json.dump({}, f)
+
+def load_data():
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
 
 # ==============================
-# ✅ CHECK USER JOINED
+# 🔐 FORCE JOIN CHECK
 # ==============================
 
-def is_user_joined(user_id):
+def is_joined(user_id):
     for channel in FORCE_CHANNELS:
         try:
             member = bot.get_chat_member(channel, user_id)
             if member.status in ["left", "kicked"]:
                 return False
-        except Exception as e:
-            print("Join Check Error:", e)
+        except:
             return False
     return True
 
+def join_markup():
+    markup = types.InlineKeyboardMarkup()
+    for channel in FORCE_CHANNELS:
+        link = f"https://t.me/{channel.replace('@','')}"
+        markup.add(types.InlineKeyboardButton("📢 Join Channel", url=link))
+    markup.add(types.InlineKeyboardButton("✅ I Joined", callback_data="check"))
+    return markup
 
 # ==============================
-# 🚀 START COMMAND
+# 🎲 AUTO CODE GENERATOR
+# ==============================
+
+def generate_code():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+# ==============================
+# 🚀 START
 # ==============================
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_id = message.from_user.id
-
-    if not is_user_joined(user_id):
-        markup = types.InlineKeyboardMarkup()
-
-        for channel in FORCE_CHANNELS:
-            if isinstance(channel, str) and channel.startswith("@"):
-                url = f"https://t.me/{channel.replace('@','')}"
-                markup.add(types.InlineKeyboardButton("📢 Join Channel", url=url))
-
-        markup.add(types.InlineKeyboardButton("✅ I Joined", callback_data="check_join"))
-
+    if not is_joined(message.from_user.id):
         bot.send_message(
             message.chat.id,
-            "⚠️ Please join all required channels to use this bot.",
-            reply_markup=markup
+            "⚠️ Please join required channels first.",
+            reply_markup=join_markup()
         )
         return
 
-    bot.send_message(message.chat.id, "✅ Welcome! Send your video code.")
-
+    bot.send_message(message.chat.id, "✅ Send your video code.")
 
 # ==============================
-# 🔁 CALLBACK CHECK JOIN
+# 🔁 CHECK JOIN BUTTON
 # ==============================
 
-@bot.callback_query_handler(func=lambda call: call.data == "check_join")
-def check_join(call):
-    user_id = call.from_user.id
-
-    if is_user_joined(user_id):
+@bot.callback_query_handler(func=lambda call: call.data == "check")
+def check(call):
+    if is_joined(call.from_user.id):
         bot.edit_message_text(
-            "✅ Verification Successful!\n\nNow send your video code.",
+            "✅ Verified!\nNow send your video code.",
             call.message.chat.id,
             call.message.message_id
         )
     else:
-        bot.answer_callback_query(
-            call.id,
-            "❌ You have not joined all channels!",
-            show_alert=True
-        )
-
+        bot.answer_callback_query(call.id, "❌ Join all channels first!", show_alert=True)
 
 # ==============================
-# 🎥 VIDEO CODE HANDLER
+# 🎥 ADMIN UPLOAD VIDEO
+# ==============================
+
+@bot.message_handler(content_types=['video'])
+def upload_video(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    data = load_data()
+    code = generate_code()
+
+    while code in data:
+        code = generate_code()
+
+    data[code] = message.video.file_id
+    save_data(data)
+
+    bot.reply_to(
+        message,
+        f"✅ Video Saved Successfully!\n\n🔑 Code: `{code}`",
+        parse_mode="Markdown"
+    )
+
+# ==============================
+# 📤 SEND VIDEO BY CODE
 # ==============================
 
 @bot.message_handler(func=lambda message: True)
-def send_video_by_code(message):
-    user_id = message.from_user.id
-    text = message.text.strip()
-
-    if not is_user_joined(user_id):
-        bot.send_message(message.chat.id, "⚠️ Please join required channels first. Type /start")
+def send_video(message):
+    if not is_joined(message.from_user.id):
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Join channels first.",
+            reply_markup=join_markup()
+        )
         return
 
-    if text in VIDEOS:
-        bot.send_video(message.chat.id, VIDEOS[text])
+    code = message.text.strip().upper()
+    data = load_data()
+
+    if code in data:
+        bot.send_video(message.chat.id, data[code])
     else:
         bot.send_message(message.chat.id, "❌ Invalid Code.")
 
+# ==============================
+# 📢 BROADCAST
+# ==============================
+
+users = set()
+
+@bot.message_handler(func=lambda message: True)
+def save_user(message):
+    users.add(message.from_user.id)
+
+@bot.message_handler(commands=['broadcast'])
+def broadcast(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    msg = message.reply_to_message
+    if not msg:
+        bot.reply_to(message, "Reply to a message to broadcast.")
+        return
+
+    for user in users:
+        try:
+            bot.copy_message(user, msg.chat.id, msg.message_id)
+        except:
+            pass
+
+    bot.reply_to(message, "✅ Broadcast Sent.")
 
 # ==============================
-# ▶️ RUN BOT
+# ▶ RUN
 # ==============================
 
-print("Bot is running...")
+print("Bot Running...")
 bot.infinity_polling()
