@@ -8,6 +8,8 @@ from telegram import Update
 from telegram.ext import (
     Application,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 # =========================
@@ -26,7 +28,7 @@ if not OWNER_ID:
 OWNER_ID = int(OWNER_ID)
 
 # =========================
-# LOGGING CONFIG
+# LOGGING
 # =========================
 
 logging.basicConfig(
@@ -37,12 +39,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =========================
-# DATA DIRECTORY SETUP
+# DATA DIRECTORY
 # =========================
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
-
 DATA_DIR.mkdir(exist_ok=True)
 
 USERS_FILE = DATA_DIR / "users.json"
@@ -91,13 +92,12 @@ force_channels = safe_load_json(FORCE_FILE, [])
 admins = safe_load_json(ADMINS_FILE, [])
 videos: Dict[str, str] = safe_load_json(VIDEOS_FILE, {})
 
-# Ensure OWNER always admin
 if OWNER_ID not in admins:
     admins.append(OWNER_ID)
     safe_save_json(ADMINS_FILE, admins)
 
 # =========================
-# SERIAL NUMBER HELPER
+# SERIAL GENERATOR
 # =========================
 
 def get_next_serial() -> str:
@@ -111,17 +111,45 @@ def get_next_serial() -> str:
         return "1"
 
 # =========================
-# BOT STARTUP
+# AUTO VIDEO SYNC HANDLER
+# =========================
+
+async def auto_video_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.channel_post:
+        return
+
+    post = update.channel_post
+
+    if not post.video:
+        return
+
+    try:
+        new_serial = get_next_serial()
+        videos[new_serial] = post.video.file_id
+        safe_save_json(VIDEOS_FILE, videos)
+
+        await context.bot.send_message(
+            chat_id=post.chat_id,
+            text=f"✅ Video Saved Successfully\n📌 Serial Number: {new_serial}"
+        )
+
+        logger.info(f"Video synced. Serial: {new_serial}")
+
+    except Exception as e:
+        logger.error(f"Auto video sync error: {e}")
+
+# =========================
+# MAIN
 # =========================
 
 def main():
     application = Application.builder().token(TOKEN).build()
 
-    logger.info("Bot foundation loaded successfully.")
-    logger.info(f"Owner ID: {OWNER_ID}")
-    logger.info(f"Total Admins: {len(admins)}")
-    logger.info(f"Loaded Videos: {len(videos)}")
+    application.add_handler(
+        MessageHandler(filters.UpdateType.CHANNEL_POST, auto_video_sync)
+    )
 
+    logger.info("Bot running with Auto Serial Video Sync...")
     application.run_polling()
 
 if __name__ == "__main__":
