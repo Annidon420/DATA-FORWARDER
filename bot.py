@@ -1,198 +1,117 @@
-import os
-import json
-import logging
-from pathlib import Path
-from typing import Any, Dict
+import telebot
+from telebot import types
 
-from telegram import Update
-from telegram.ext import (
-    Application,
-    ContextTypes,
-    MessageHandler,
-    CommandHandler,
-    filters,
-)
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# =========================
-# ENVIRONMENT VARIABLES
-# =========================
+# ==============================
+# 🔒 FORCE JOIN CHANNELS
+# ==============================
+# Public channel -> "@username"
+# Private channel -> -100xxxxxxxxxx (chat ID)
 
-TOKEN = os.getenv("TOKEN")
-OWNER_ID = os.getenv("ADMIN_ID")
+FORCE_CHANNELS = [
+    "@yourpublicchannel",
+    -1001234567890  # replace with your private channel ID
+]
 
-if not TOKEN:
-    raise ValueError("TOKEN environment variable not set")
+# ==============================
+# 🎬 VIDEO CODE SYSTEM
+# ==============================
 
-if not OWNER_ID:
-    raise ValueError("ADMIN_ID environment variable not set")
+VIDEOS = {
+    "1": "FILE_ID_HERE",
+    "2": "FILE_ID_HERE_2"
+}
 
-OWNER_ID = int(OWNER_ID)
+# ==============================
+# ✅ CHECK USER JOINED
+# ==============================
 
-# =========================
-# LOGGING
-# =========================
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-logger = logging.getLogger(__name__)
-
-# =========================
-# DATA DIRECTORY
-# =========================
-
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
-
-USERS_FILE = DATA_DIR / "users.json"
-CODES_FILE = DATA_DIR / "codes.json"
-FORCE_FILE = DATA_DIR / "force.json"
-ADMINS_FILE = DATA_DIR / "admins.json"
-VIDEOS_FILE = DATA_DIR / "videos.json"
-
-# =========================
-# SAFE JSON
-# =========================
-
-def safe_load_json(file_path: Path, default: Any):
-    try:
-        if not file_path.exists():
-            file_path.write_text(json.dumps(default, indent=4))
-            return default
-
-        with file_path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-
-    except json.JSONDecodeError:
-        logger.error(f"Corrupted JSON detected: {file_path.name}. Resetting.")
-        file_path.write_text(json.dumps(default, indent=4))
-        return default
-
-    except Exception as e:
-        logger.error(f"Error loading {file_path.name}: {e}")
-        return default
+def is_user_joined(user_id):
+    for channel in FORCE_CHANNELS:
+        try:
+            member = bot.get_chat_member(channel, user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except Exception as e:
+            print("Join Check Error:", e)
+            return False
+    return True
 
 
-def safe_save_json(file_path: Path, data: Any):
-    try:
-        with file_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        logger.error(f"Error saving {file_path.name}: {e}")
+# ==============================
+# 🚀 START COMMAND
+# ==============================
 
-# =========================
-# LOAD DATA
-# =========================
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
 
-users: Dict[str, Dict] = safe_load_json(USERS_FILE, {})
-codes: Dict[str, bool] = safe_load_json(CODES_FILE, {})
-force_channels = safe_load_json(FORCE_FILE, [])
-admins = safe_load_json(ADMINS_FILE, [])
-videos: Dict[str, str] = safe_load_json(VIDEOS_FILE, {})
+    if not is_user_joined(user_id):
+        markup = types.InlineKeyboardMarkup()
 
-if OWNER_ID not in admins:
-    admins.append(OWNER_ID)
-    safe_save_json(ADMINS_FILE, admins)
+        for channel in FORCE_CHANNELS:
+            if isinstance(channel, str) and channel.startswith("@"):
+                url = f"https://t.me/{channel.replace('@','')}"
+                markup.add(types.InlineKeyboardButton("📢 Join Channel", url=url))
 
-# =========================
-# SERIAL GENERATOR
-# =========================
+        markup.add(types.InlineKeyboardButton("✅ I Joined", callback_data="check_join"))
 
-def get_next_serial() -> str:
-    if not videos:
-        return "1"
-
-    try:
-        max_serial = max(int(k) for k in videos.keys())
-        return str(max_serial + 1)
-    except Exception:
-        return "1"
-
-# =========================
-# AUTO VIDEO SYNC
-# =========================
-
-async def auto_video_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.channel_post:
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Please join all required channels to use this bot.",
+            reply_markup=markup
+        )
         return
 
-    post = update.channel_post
+    bot.send_message(message.chat.id, "✅ Welcome! Send your video code.")
 
-    if not post.video:
-        return
 
-    try:
-        new_serial = get_next_serial()
-        videos[new_serial] = post.video.file_id
-        safe_save_json(VIDEOS_FILE, videos)
+# ==============================
+# 🔁 CALLBACK CHECK JOIN
+# ==============================
 
-        await context.bot.send_message(
-            chat_id=post.chat_id,
-            text=f"✅ Video Saved Successfully\n📌 Serial Number: {new_serial}"
+@bot.callback_query_handler(func=lambda call: call.data == "check_join")
+def check_join(call):
+    user_id = call.from_user.id
+
+    if is_user_joined(user_id):
+        bot.edit_message_text(
+            "✅ Verification Successful!\n\nNow send your video code.",
+            call.message.chat.id,
+            call.message.message_id
+        )
+    else:
+        bot.answer_callback_query(
+            call.id,
+            "❌ You have not joined all channels!",
+            show_alert=True
         )
 
-        logger.info(f"Video synced. Serial: {new_serial}")
 
-    except Exception as e:
-        logger.error(f"Auto video sync error: {e}")
+# ==============================
+# 🎥 VIDEO CODE HANDLER
+# ==============================
 
-# =========================
-# START COMMAND
-# =========================
+@bot.message_handler(func=lambda message: True)
+def send_video_by_code(message):
+    user_id = message.from_user.id
+    text = message.text.strip()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    users[str(user.id)] = {
-        "username": user.username
-    }
-
-    safe_save_json(USERS_FILE, users)
-
-    await update.message.reply_text(
-        "👋 Welcome!\n\nSend your access code to get video."
-    )
-
-# =========================
-# CODE HANDLER
-# =========================
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-
-    # Only numeric codes allowed
-    if not text.isdigit():
+    if not is_user_joined(user_id):
+        bot.send_message(message.chat.id, "⚠️ Please join required channels first. Type /start")
         return
 
-    # Check if code exists
-    if text in codes:
-
-        if text in videos:
-            await update.message.reply_text("✅ Access Granted! Sending video...")
-            await update.message.reply_video(videos[text])
-        else:
-            await update.message.reply_text(
-                "⚠ Code valid but no video linked yet."
-            )
+    if text in VIDEOS:
+        bot.send_video(message.chat.id, VIDEOS[text])
     else:
-        await update.message.reply_text("❌ Invalid Code.")
+        bot.send_message(message.chat.id, "❌ Invalid Code.")
 
-# =========================
-# MAIN
-# =========================
 
-def main():
-    application = Application.builder().token(TOKEN).build()
+# ==============================
+# ▶️ RUN BOT
+# ==============================
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, auto_video_sync))
-
-    logger.info("Bot running with User + Code System...")
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
+print("Bot is running...")
+bot.infinity_polling()
