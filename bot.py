@@ -9,33 +9,41 @@ import string
 # 🔑 CONFIG
 # ==============================
 
-BOT_TOKEN = "YOUR_BOT_TOKEN"
-ADMIN_ID = 123456789  # Replace with your Telegram ID
+BOT_TOKEN = "8406788191:AAGZVHQS0xWkNHMlfcoDIpj8yleeE3Y7m_k"
+ADMIN_ID = 6313511983
 
-# Public channels only (easy version)
-FORCE_CHANNELS = [
-    "@yourchannel1",
-    "@yourchannel2"
-]
-
-DATA_FILE = "videos.json"
+VIDEOS_FILE = "videos.json"
+CHANNELS_FILE = "channels.json"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==============================
-# 📂 LOAD / SAVE DATABASE
+# 📂 CREATE FILES IF NOT EXIST
 # ==============================
 
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        json.dump({}, f)
+for file in [VIDEOS_FILE, CHANNELS_FILE]:
+    if not os.path.exists(file):
+        with open(file, "w") as f:
+            json.dump({}, f)
 
-def load_data():
-    with open(DATA_FILE, "r") as f:
+# ==============================
+# 📂 LOAD / SAVE
+# ==============================
+
+def load_videos():
+    with open(VIDEOS_FILE, "r") as f:
         return json.load(f)
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
+def save_videos(data):
+    with open(VIDEOS_FILE, "w") as f:
+        json.dump(data, f)
+
+def load_channels():
+    with open(CHANNELS_FILE, "r") as f:
+        return json.load(f)
+
+def save_channels(data):
+    with open(CHANNELS_FILE, "w") as f:
         json.dump(data, f)
 
 # ==============================
@@ -43,7 +51,8 @@ def save_data(data):
 # ==============================
 
 def is_joined(user_id):
-    for channel in FORCE_CHANNELS:
+    channels = load_channels()
+    for channel in channels.values():
         try:
             member = bot.get_chat_member(channel, user_id)
             if member.status in ["left", "kicked"]:
@@ -54,9 +63,11 @@ def is_joined(user_id):
 
 def join_markup():
     markup = types.InlineKeyboardMarkup()
-    for channel in FORCE_CHANNELS:
-        link = f"https://t.me/{channel.replace('@','')}"
-        markup.add(types.InlineKeyboardButton("📢 Join Channel", url=link))
+    channels = load_channels()
+    for channel in channels.values():
+        if channel.startswith("@"):
+            link = f"https://t.me/{channel.replace('@','')}"
+            markup.add(types.InlineKeyboardButton("📢 Join Channel", url=link))
     markup.add(types.InlineKeyboardButton("✅ I Joined", callback_data="check"))
     return markup
 
@@ -107,37 +118,32 @@ def upload_video(message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    data = load_data()
+    data = load_videos()
     code = generate_code()
 
     while code in data:
         code = generate_code()
 
     data[code] = message.video.file_id
-    save_data(data)
+    save_videos(data)
 
-    bot.reply_to(
-        message,
-        f"✅ Video Saved Successfully!\n\n🔑 Code: `{code}`",
-        parse_mode="Markdown"
-    )
+    bot.reply_to(message, f"✅ Video Saved!\n🔑 Code: `{code}`", parse_mode="Markdown")
 
 # ==============================
-# 📤 SEND VIDEO BY CODE
+# 📤 SEND VIDEO
 # ==============================
 
 @bot.message_handler(func=lambda message: True)
 def send_video(message):
+    if message.from_user.id == ADMIN_ID:
+        return
+
     if not is_joined(message.from_user.id):
-        bot.send_message(
-            message.chat.id,
-            "⚠️ Join channels first.",
-            reply_markup=join_markup()
-        )
+        bot.send_message(message.chat.id, "⚠️ Join channels first.", reply_markup=join_markup())
         return
 
     code = message.text.strip().upper()
-    data = load_data()
+    data = load_videos()
 
     if code in data:
         bot.send_video(message.chat.id, data[code])
@@ -145,32 +151,62 @@ def send_video(message):
         bot.send_message(message.chat.id, "❌ Invalid Code.")
 
 # ==============================
-# 📢 BROADCAST
+# 🛠 ADMIN PANEL COMMANDS
 # ==============================
 
-users = set()
-
-@bot.message_handler(func=lambda message: True)
-def save_user(message):
-    users.add(message.from_user.id)
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast(message):
+@bot.message_handler(commands=['addchannel'])
+def add_channel(message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    msg = message.reply_to_message
-    if not msg:
-        bot.reply_to(message, "Reply to a message to broadcast.")
+    try:
+        channel = message.text.split(" ")[1]
+    except:
+        bot.reply_to(message, "Usage:\n/addchannel @channelusername")
         return
 
-    for user in users:
-        try:
-            bot.copy_message(user, msg.chat.id, msg.message_id)
-        except:
-            pass
+    channels = load_channels()
+    channels[str(len(channels)+1)] = channel
+    save_channels(channels)
 
-    bot.reply_to(message, "✅ Broadcast Sent.")
+    bot.reply_to(message, f"✅ Channel Added:\n{channel}")
+
+@bot.message_handler(commands=['removechannel'])
+def remove_channel(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        channel = message.text.split(" ")[1]
+    except:
+        bot.reply_to(message, "Usage:\n/removechannel @channelusername")
+        return
+
+    channels = load_channels()
+    for key, value in list(channels.items()):
+        if value == channel:
+            del channels[key]
+            save_channels(channels)
+            bot.reply_to(message, f"❌ Channel Removed:\n{channel}")
+            return
+
+    bot.reply_to(message, "Channel not found.")
+
+@bot.message_handler(commands=['listchannels'])
+def list_channels(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    channels = load_channels()
+    if not channels:
+        bot.reply_to(message, "No channels added.")
+        return
+
+    text = "📢 Force Join Channels:\n\n"
+    for ch in channels.values():
+        text += f"{ch}\n"
+
+    bot.reply_to(message, text)
 
 # ==============================
 # ▶ RUN
