@@ -9,6 +9,7 @@ from telegram.ext import (
     Application,
     ContextTypes,
     MessageHandler,
+    CommandHandler,
     filters,
 )
 
@@ -53,7 +54,7 @@ ADMINS_FILE = DATA_DIR / "admins.json"
 VIDEOS_FILE = DATA_DIR / "videos.json"
 
 # =========================
-# SAFE JSON HANDLER
+# SAFE JSON
 # =========================
 
 def safe_load_json(file_path: Path, default: Any):
@@ -111,7 +112,7 @@ def get_next_serial() -> str:
         return "1"
 
 # =========================
-# AUTO VIDEO SYNC HANDLER
+# AUTO VIDEO SYNC
 # =========================
 
 async def auto_video_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,17 +140,58 @@ async def auto_video_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Auto video sync error: {e}")
 
 # =========================
+# START COMMAND
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    users[str(user.id)] = {
+        "username": user.username
+    }
+
+    safe_save_json(USERS_FILE, users)
+
+    await update.message.reply_text(
+        "👋 Welcome!\n\nSend your access code to get video."
+    )
+
+# =========================
+# CODE HANDLER
+# =========================
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    # Only numeric codes allowed
+    if not text.isdigit():
+        return
+
+    # Check if code exists
+    if text in codes:
+
+        if text in videos:
+            await update.message.reply_text("✅ Access Granted! Sending video...")
+            await update.message.reply_video(videos[text])
+        else:
+            await update.message.reply_text(
+                "⚠ Code valid but no video linked yet."
+            )
+    else:
+        await update.message.reply_text("❌ Invalid Code.")
+
+# =========================
 # MAIN
 # =========================
 
 def main():
     application = Application.builder().token(TOKEN).build()
 
-    application.add_handler(
-        MessageHandler(filters.UpdateType.CHANNEL_POST, auto_video_sync)
-    )
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, auto_video_sync))
 
-    logger.info("Bot running with Auto Serial Video Sync...")
+    logger.info("Bot running with User + Code System...")
     application.run_polling()
 
 if __name__ == "__main__":
