@@ -8,9 +8,9 @@ ADMIN_ID = 6313511983
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-VIDEOS_FILE = "videos.json"
-USERS_FILE = "users.json"
-CHANNELS_FILE = "channels.json"
+VIDEOS_FILE = "data/videos.json"
+USERS_FILE = "data/users.json"
+CHANNELS_FILE = "data/channels.json"
 
 
 # ================= SAFE JSON =================
@@ -242,3 +242,4 @@ def handle_code(message):
 
 print("Bot Running...")
 bot.infinity_polling()
+
