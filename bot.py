@@ -42,7 +42,7 @@ def start(message):
         users.append(message.from_user.id)
         save_json(USERS_FILE, users)
 
-    bot.reply_to(message, "Welcome!\nSend video code to get video.")
+    bot.reply_to(message, "Welcome!\nSend video code & Get Code From @data277.")
 
 
 # ================= ADMIN PANEL =================
@@ -242,4 +242,5 @@ def handle_code(message):
 
 print("Bot Running...")
 bot.infinity_polling()
+
 
